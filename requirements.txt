@@ -1,0 +1,8 @@
+requests==2.31.0
+beautifulsoup4==4.12.2
+gspread==5.10.0
+google-auth==2.23.0
+
+# Optional (for JS heavy sites later)
+# playwright==1.43.0
+
