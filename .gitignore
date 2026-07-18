@@ -1,0 +1,13 @@
+# Byte-compiled / cached
+__pycache__/
+
+# local storage
+storage/*.json
+
+# secrets
+*.json
+
+.env
+
+# python env
+venv/
