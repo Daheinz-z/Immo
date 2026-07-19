@@ -6,7 +6,7 @@ import os
 from math import radians, cos, sin, asin, sqrt
 
 NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
-USER_AGENT = 'immo-scraper/1.0 (your-email@example.com)'  # bitte durch deine Email ersetzen
+USER_AGENT = 'immo-scraper/1.0 (david.heinz92@gmail.com)'  # bitte durch deine Email ersetzen
 CACHE_PATH = 'storage/geocode_cache.json'
 SLEEP_BETWEEN_LOOKUPS = 1.1  # Sekunden, Nominatim Policy beachten
 
