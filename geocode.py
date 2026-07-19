@@ -8,7 +8,7 @@ NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
 CACHE_PATH = 'storage/geocode_cache.json'
 SLEEP_BETWEEN_LOOKUPS = float(os.environ.get('NOMINATIM_SLEEP', '1.1'))
 # Read user agent from env (recommended to set as secret)
-USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (kontakt@example.com)')
+USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (david.heinz92@gmail.com)')
 
 # Average driving speed used to estimate travel time (km/h)
 AVERAGE_SPEED_KMH = float(os.environ.get('TRAVEL_SPEED_KMH', '80'))
