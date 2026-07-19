@@ -129,11 +129,22 @@ def main():
         if scored['passes_filters']:
             exported_items.append(scored)
         else:
-            # review if failing ONLY due to missing land or missing geocode (or both)
-            fatal = {'price>max','living_too_small','rooms_too_few','no_price','no_rooms','not_house_keyword','denkmal','no_living_m2'}
-            reason_set = set(reasons)
-            if reason_set and reason_set.issubset({'no_land_m2','no_geocode'}):
-                review_items.append(scored)
+                    # Review criteria (more permissive):
+        # - allow review if reasons are only land/geocode related (including land_too_small)
+        # - OR if it looks like a house (keywords) but missing land_m2 or geocode
+        reason_set = set(reasons)
+        fatal_reasons = {'price>max','living_too_small','rooms_too_few','no_price','no_rooms','not_house_keyword','denkmal'}
+        review_allowed = {'no_land_m2','no_geocode','land_too_small'}
+        txt_lower = ((scored.get('raw_text') or '') + ' ' + (scored.get('title') or '')).lower()
+
+        looks_like_house = any(k in txt_lower for k in ['haus','einfamilienhaus','freistehend','freisteh','bauernhaus','landhaus','bungalow','grundstueck','grundstück'])
+
+        # Condition A: no fatal reasons present AND all reasons are (only) review_allowed
+        if reason_set and reason_set.isdisjoint(fatal_reasons) and reason_set.issubset(review_allowed):
+            review_items.append(scored)
+        # Condition B: looks like a house, and fails only for land/geocode or land small
+        elif looks_like_house and reason_set.isdisjoint(fatal_reasons):
+            review_items.append(scored)
 
     save_db(db)
 
