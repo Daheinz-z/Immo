@@ -7,7 +7,7 @@ from math import radians, cos, sin, asin, sqrt
 NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
 CACHE_PATH = 'storage/geocode_cache.json'
 SLEEP_BETWEEN_LOOKUPS = float(os.environ.get('NOMINATIM_SLEEP', '1.1'))
-USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (kontakt@example.com)')
+USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (david.heinz92@gmail.com)')
 
 def load_cache():
     if os.path.exists(CACHE_PATH):
