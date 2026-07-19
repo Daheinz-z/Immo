@@ -4,7 +4,7 @@ from scrapers.ebay_kleinanzeigen import EbayKAScraper
 from normalizer import normalize_listing
 from scoring import score_listing
 from exporter_gsheets import export_to_sheet
-from geocode import geocode_item
+from geocode import geocode_item, haversine_km
 import json
 import os
 from datetime import datetime
@@ -20,27 +20,36 @@ EBAY_SEEDS = [
 ]
 
 # Thresholds (anpassbar)
-MIN_LIVING_M2 = 90
-MIN_LAND_M2 = 1000
-MIN_ROOMS = 2
-MAX_PRICE = 400000
+MIN_LIVING_M2 = int(os.environ.get('MIN_LIVING_M2', '90'))
+MIN_LAND_M2 = int(os.environ.get('MIN_LAND_M2', '1000'))
+MIN_ROOMS = int(os.environ.get('MIN_ROOMS', '2'))
+MAX_PRICE = int(os.environ.get('MAX_PRICE', '400000'))
 # approximate distance threshold in km (2 hours ~ 180 km at avg 90 km/h)
-MAX_DISTANCE_KM = 180
+MAX_DISTANCE_KM = int(os.environ.get('MAX_DISTANCE_KM', '180'))
+
+# eBay run configuration via ENV
+# Number of seeds to process starting at SEED_START (0-based). By default process all seeds.
+EBAY_SEED_START = int(os.environ.get('EBAY_SEED_START', '0'))
+EBAY_SEED_COUNT = int(os.environ.get('EBAY_SEED_COUNT', str(len(EBAY_SEEDS))))
+# Max candidate detail URLs per seed (to limit work per run)
+EBAY_MAX_CANDIDATES_PER_SEED = int(os.environ.get('EBAY_MAX_CANDIDATES_PER_SEED', '120'))
+
+# keep previous defaults for scraper; ebay scraper will also read EBAY_MAX_PAGES, EBAY_DELAY_MIN/MAX
 
 # Keep main functions load_db, save_db as before
+
 def load_db():
     if os.path.exists(STORAGE_PATH):
         with open(STORAGE_PATH, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {'seen': {}, 'listings': []}
 
+
 def save_db(db):
     os.makedirs(os.path.dirname(STORAGE_PATH), exist_ok=True)
     with open(STORAGE_PATH, 'w', encoding='utf-8') as f:
         json.dump(db, f, ensure_ascii=False, indent=2)
 
-# matches_must_criteria remains unchanged from previous main.py implementation
-from geocode import haversine_km
 
 def matches_must_criteria(item):
     reasons = []
@@ -132,13 +141,21 @@ def main():
         print('Immofux fetch failed:', e)
         immofux_items = []
 
-    # run ebay kleinanzeigen scraper
-    ebay = EbayKAScraper()
-    try:
-        ebay_items = ebay.fetch_listings(EBAY_SEEDS, max_candidates=120)
-    except Exception as e:
-        print('eBay KA fetch failed:', e)
-        ebay_items = []
+    # decide which ebay seeds to run this invocation (slice using EBAY_SEED_START/COUNT)
+    seed_start = EBAY_SEED_START
+    seed_count = max(0, EBAY_SEED_COUNT)
+    selected_seeds = EBAY_SEEDS[seed_start:seed_start + seed_count]
+
+    ebay_items = []
+    if selected_seeds:
+        ebay = EbayKAScraper()
+        for seed in selected_seeds:
+            try:
+                # respect per-seed max candidates
+                items = ebay.fetch_listings([seed], max_candidates=EBAY_MAX_CANDIDATES_PER_SEED)
+                ebay_items.extend(items)
+            except Exception as e:
+                print(f'eBay KA fetch failed for seed {seed}:', e)
 
     combined = []
     for it in immofux_items + ebay_items:
@@ -188,6 +205,7 @@ def main():
         print(f"Exported parsed {len(new_items)} items; exported {len(exported_items)} matching items; {len(review_items)} review items to Google Sheet")
     except Exception as e:
         print('Export failed', e)
+
 
 if __name__ == '__main__':
     main()
