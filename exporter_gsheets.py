@@ -22,7 +22,6 @@ def _ensure_worksheet(sh, name, header):
     try:
         ws = sh.worksheet(name)
         existing = ws.row_values(1)
-        # if existing header is different length, try to replace
         if not existing or len(existing) < len(header):
             try:
                 ws.delete_rows(1)
@@ -34,7 +33,7 @@ def _ensure_worksheet(sh, name, header):
         ws.append_row(header)
     return ws
 
-def export_to_sheet(parsed_items, matching_items):
+def export_to_sheet(parsed_items, matching_items, review_items=None):
     sheet_id = os.environ.get('GSHEET_ID')
     if not sheet_id:
         raise RuntimeError('GSHEET_ID not set in env (GitHub Secret)')
@@ -96,7 +95,38 @@ def export_to_sheet(parsed_items, matching_items):
             it.get('passes_filters'),
             ', '.join(it.get('filter_reasons') or []),
             it.get('addr_raw'),
-            (it.get('raw_text') or '')[:1000],  # limit size for sheets
+            (it.get('raw_text') or '')[:1000],
         ])
     if parsed_rows:
         parsed_ws.append_rows(parsed_rows, value_input_option='RAW')
+
+    # Review worksheet (near matches) - optional
+    if review_items:
+        review_header = [
+            'title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng',
+            'distance_km_berlin','distance_km_hamburg','passes_filters','filter_reasons','addr_raw','raw_text'
+        ]
+        review_ws = _ensure_worksheet(sh, 'Review', review_header)
+        review_rows = []
+        for it in review_items:
+            review_rows.append([
+                it.get('title'),
+                it.get('living_m2'),
+                it.get('land_m2'),
+                it.get('city'),
+                it.get('price_eur'),
+                it.get('rooms'),
+                it.get('condition'),
+                it.get('date_found'),
+                it.get('url'),
+                it.get('lat'),
+                it.get('lng'),
+                it.get('distance_km_berlin'),
+                it.get('distance_km_hamburg'),
+                it.get('passes_filters'),
+                ', '.join(it.get('filter_reasons') or []),
+                it.get('addr_raw'),
+                (it.get('raw_text') or '')[:1000],
+            ])
+        if review_rows:
+            review_ws.append_rows(review_rows, value_input_option='RAW')
