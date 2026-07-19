@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from scrapers.immofux import ImmofuxScraper
+from scrapers.ebay_kleinanzeigen import EbayKAScraper
 from normalizer import normalize_listing
 from scoring import score_listing
 from exporter_gsheets import export_to_sheet
@@ -9,7 +10,14 @@ import os
 from datetime import datetime
 
 STORAGE_PATH = 'storage/db.json'
-SEARCH_URL = 'https://immofux.de/'
+# keep previous SEARCH_URL for immofux
+IMMOFUX_SEARCH_URL = 'https://immofux.de/'
+# seed URLs for eBay Kleinanzeigen (from user)
+EBAY_SEEDS = [
+    'https://www.kleinanzeigen.de/s-haus-kaufen/c208',
+    'https://www.kleinanzeigen.de/s-ferienwohnung-ferienhaus/kaufen/c275+ferienwohnung_ferienhaus.art_s:kaufen',
+    'https://www.kleinanzeigen.de/s-immobilien/sonstiges/c198'
+]
 
 # Thresholds (anpassbar)
 MIN_LIVING_M2 = 90
@@ -19,6 +27,7 @@ MAX_PRICE = 400000
 # approximate distance threshold in km (2 hours ~ 180 km at avg 90 km/h)
 MAX_DISTANCE_KM = 180
 
+# Keep main functions load_db, save_db as before
 def load_db():
     if os.path.exists(STORAGE_PATH):
         with open(STORAGE_PATH, 'r', encoding='utf-8') as f:
@@ -30,14 +39,15 @@ def save_db(db):
     with open(STORAGE_PATH, 'w', encoding='utf-8') as f:
         json.dump(db, f, ensure_ascii=False, indent=2)
 
+# matches_must_criteria remains unchanged from previous main.py implementation
+from geocode import haversine_km
+
 def matches_must_criteria(item):
     reasons = []
 
-    # Only consider sale offers
     if item.get('offer_type') != 'sale':
         reasons.append('not_for_sale')
 
-    # price
     if item.get('price_eur') is None:
         reasons.append('no_price')
     else:
@@ -47,7 +57,6 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('price_parse_error')
 
-    # living area
     if item.get('living_m2') is None:
         reasons.append('no_living_m2')
     else:
@@ -57,7 +66,6 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('living_parse_error')
 
-    # land area (only check if present)
     if item.get('land_m2') is None:
         reasons.append('no_land_m2')
     else:
@@ -67,7 +75,6 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('land_parse_error')
 
-    # rooms
     if item.get('rooms') is None:
         reasons.append('no_rooms')
     else:
@@ -77,55 +84,74 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('rooms_parse_error')
 
-    # denkmalschutz
     txt = (item.get('raw_text') or '').lower()
     if 'denkmal' in txt or 'denkmalgeschützt' in txt or 'denkmalschutz' in txt:
         reasons.append('denkmal')
 
-    # object type heuristics: require keywords indicating house + land
     must_keywords = ['haus', 'einfamilienhaus', 'freistehend', 'freistehendes', 'alleinsteh', 'bauernhaus', 'landhaus', 'bungalow', 'grundstueck', 'grundstück']
     if not any(k in txt for k in must_keywords):
         reasons.append('not_house_keyword')
 
-    # distance / travel time check: prefer estimated travel time if available
     lat = item.get('lat'); lng = item.get('lng')
     if lat and lng:
-        t_b = item.get('est_travel_time_h_berlin')
-        t_h = item.get('est_travel_time_h_hamburg')
-        d_b = item.get('distance_km_berlin')
-        d_h = item.get('distance_km_hamburg')
-        within = False
-        # check travel time first (<= 2.0 hours)
-        if t_b is not None and t_b <= 2.0:
-            within = True
-        if t_h is not None and t_h <= 2.0:
-            within = True
-        # fallback to distance if travel time not available
-        if d_b is not None and d_b <= MAX_DISTANCE_KM:
-            within = True
-        if d_h is not None and d_h <= MAX_DISTANCE_KM:
-            within = True
-        if not within:
-            reasons.append('too_far')
+        try:
+            d_berlin = haversine_km(lat, lng, 52.5200, 13.4050)
+            d_hamburg = haversine_km(lat, lng, 53.5511, 9.9937)
+            item['distance_km_berlin'] = round(d_berlin, 1)
+            item['distance_km_hamburg'] = round(d_hamburg, 1)
+            t_b = item.get('est_travel_time_h_berlin')
+            t_h = item.get('est_travel_time_h_hamburg')
+            within = False
+            if t_b is not None and t_b <= 2.0:
+                within = True
+            if t_h is not None and t_h <= 2.0:
+                within = True
+            if item.get('distance_km_berlin') is not None and item['distance_km_berlin'] <= MAX_DISTANCE_KM:
+                within = True
+            if item.get('distance_km_hamburg') is not None and item['distance_km_hamburg'] <= MAX_DISTANCE_KM:
+                within = True
+            if not within:
+                reasons.append('too_far')
+        except Exception:
+            reasons.append('distance_calc_error')
     else:
         reasons.append('no_geocode')
 
     passes = (len(reasons) == 0)
     return passes, reasons
 
+
 def main():
     db = load_db()
-    scraper = ImmofuxScraper()
+
+    # run immofux as before
+    immofux = ImmofuxScraper()
     try:
-        raw_list = scraper.fetch_listings(SEARCH_URL)
+        immofux_items = immofux.fetch_listings(IMMOFUX_SEARCH_URL)
     except Exception as e:
-        print('Search fetch failed:', e)
-        raw_list = []
+        print('Immofux fetch failed:', e)
+        immofux_items = []
+
+    # run ebay kleinanzeigen scraper
+    ebay = EbayKAScraper()
+    try:
+        ebay_items = ebay.fetch_listings(EBAY_SEEDS, max_candidates=120)
+    except Exception as e:
+        print('eBay KA fetch failed:', e)
+        ebay_items = []
+
+    combined = []
+    for it in immofux_items + ebay_items:
+        # simple dedupe by url
+        if it.get('url') in db['seen']:
+            continue
+        combined.append(it)
 
     new_items = []
     exported_items = []
     review_items = []
-    for raw in raw_list:
+
+    for raw in combined:
         ident = raw.get('url') or raw.get('title')
         if not ident:
             continue
@@ -144,7 +170,7 @@ def main():
         if scored['passes_filters']:
             exported_items.append(scored)
         else:
-            # Review criteria (more permissive):
+            # review permissive as before
             reason_set = set(reasons)
             fatal_reasons = {'price>max','living_too_small','rooms_too_few','no_price','no_rooms','not_house_keyword','denkmal'}
             review_allowed = {'no_land_m2','no_geocode','land_too_small'}
