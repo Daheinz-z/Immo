@@ -1,4 +1,3 @@
-# exporter_gsheets.py
 import os
 import json
 import gspread
@@ -19,7 +18,23 @@ def _get_client_from_env():
     client = gspread.authorize(creds)
     return client
 
-def export_to_sheet(items):
+def _ensure_worksheet(sh, name, header):
+    try:
+        ws = sh.worksheet(name)
+        existing = ws.row_values(1)
+        # if existing header is different length, try to replace
+        if not existing or len(existing) < len(header):
+            try:
+                ws.delete_rows(1)
+            except Exception:
+                pass
+            ws.insert_row(header, index=1)
+    except Exception:
+        ws = sh.add_worksheet(name, rows=2000, cols=len(header))
+        ws.append_row(header)
+    return ws
+
+def export_to_sheet(parsed_items, matching_items):
     sheet_id = os.environ.get('GSHEET_ID')
     if not sheet_id:
         raise RuntimeError('GSHEET_ID not set in env (GitHub Secret)')
@@ -31,21 +46,12 @@ def export_to_sheet(items):
     except Exception as e:
         raise RuntimeError('Failed to open spreadsheet: ' + str(e))
 
-    # Ensure worksheet exists and header is correct
-    header = ['title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng','distance_km_berlin','distance_km_hamburg','passes_filters']
-    try:
-        worksheet = sh.worksheet('Listings')
-        # verify header length; if different, don't overwrite but append rows using current columns
-        existing = worksheet.row_values(1)
-        if not existing or len(existing) < len(header):
-            worksheet.delete_rows(1) if existing else None
-            worksheet.insert_row(header, index=1)
-    except Exception:
-        worksheet = sh.add_worksheet('Listings', rows=2000, cols=len(header))
-        worksheet.append_row(header)
+    # Listings worksheet (only matches)
+    listings_header = ['title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng','distance_km_berlin','distance_km_hamburg']
+    listings_ws = _ensure_worksheet(sh, 'Listings', listings_header)
 
     rows = []
-    for it in items:
+    for it in matching_items:
         rows.append([
             it.get('title'),
             it.get('living_m2'),
@@ -60,7 +66,37 @@ def export_to_sheet(items):
             it.get('lng'),
             it.get('distance_km_berlin'),
             it.get('distance_km_hamburg'),
-            it.get('passes_filters'),
         ])
     if rows:
-        worksheet.append_rows(rows, value_input_option='RAW')
+        listings_ws.append_rows(rows, value_input_option='RAW')
+
+    # Parsed worksheet (all parsed items + reasons)
+    parsed_header = [
+        'title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng',
+        'distance_km_berlin','distance_km_hamburg','passes_filters','filter_reasons','addr_raw','raw_text'
+    ]
+    parsed_ws = _ensure_worksheet(sh, 'Parsed', parsed_header)
+
+    parsed_rows = []
+    for it in parsed_items:
+        parsed_rows.append([
+            it.get('title'),
+            it.get('living_m2'),
+            it.get('land_m2'),
+            it.get('city'),
+            it.get('price_eur'),
+            it.get('rooms'),
+            it.get('condition'),
+            it.get('date_found'),
+            it.get('url'),
+            it.get('lat'),
+            it.get('lng'),
+            it.get('distance_km_berlin'),
+            it.get('distance_km_hamburg'),
+            it.get('passes_filters'),
+            ', '.join(it.get('filter_reasons') or []),
+            it.get('addr_raw'),
+            (it.get('raw_text') or '')[:1000],  # limit size for sheets
+        ])
+    if parsed_rows:
+        parsed_ws.append_rows(parsed_rows, value_input_option='RAW')
