@@ -3,7 +3,7 @@ from scrapers.immofux import ImmofuxScraper
 from normalizer import normalize_listing
 from scoring import score_listing
 from exporter_gsheets import export_to_sheet
-from geocode import geocode_item, haversine_km
+from geocode import geocode_item
 import json
 import os
 from datetime import datetime
@@ -19,10 +19,6 @@ MAX_PRICE = 400000
 # approximate distance threshold in km (2 hours ~ 180 km at avg 90 km/h)
 MAX_DISTANCE_KM = 180
 
-# Coordinates for Berlin and Hamburg (lat, lon)
-BERLIN_COORD = (52.5200, 13.4050)
-HAMBURG_COORD = (53.5511, 9.9937)
-
 def load_db():
     if os.path.exists(STORAGE_PATH):
         with open(STORAGE_PATH, 'r', encoding='utf-8') as f:
@@ -37,6 +33,7 @@ def save_db(db):
 def matches_must_criteria(item):
     reasons = []
 
+    # price
     if item.get('price_eur') is None:
         reasons.append('no_price')
     else:
@@ -46,6 +43,7 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('price_parse_error')
 
+    # living area
     if item.get('living_m2') is None:
         reasons.append('no_living_m2')
     else:
@@ -55,6 +53,7 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('living_parse_error')
 
+    # land area (only check if present)
     if item.get('land_m2') is None:
         reasons.append('no_land_m2')
     else:
@@ -64,6 +63,7 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('land_parse_error')
 
+    # rooms
     if item.get('rooms') is None:
         reasons.append('no_rooms')
     else:
@@ -73,25 +73,36 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('rooms_parse_error')
 
+    # denkmalschutz
     txt = (item.get('raw_text') or '').lower()
     if 'denkmal' in txt or 'denkmalgeschützt' in txt or 'denkmalschutz' in txt:
         reasons.append('denkmal')
 
+    # object type heuristics: require keywords indicating house + land
     must_keywords = ['haus', 'einfamilienhaus', 'freistehend', 'freistehendes', 'alleinsteh', 'bauernhaus', 'landhaus', 'bungalow', 'grundstueck', 'grundstück']
     if not any(k in txt for k in must_keywords):
         reasons.append('not_house_keyword')
 
+    # distance / travel time check: prefer estimated travel time if available
     lat = item.get('lat'); lng = item.get('lng')
     if lat and lng:
-        try:
-            d_berlin = haversine_km(lat, lng, BERLIN_COORD[0], BERLIN_COORD[1])
-            d_hamburg = haversine_km(lat, lng, HAMBURG_COORD[0], HAMBURG_COORD[1])
-            item['distance_km_berlin'] = round(d_berlin, 1)
-            item['distance_km_hamburg'] = round(d_hamburg, 1)
-            if d_berlin > MAX_DISTANCE_KM and d_hamburg > MAX_DISTANCE_KM:
-                reasons.append('too_far')
-        except Exception:
-            reasons.append('distance_calc_error')
+        t_b = item.get('est_travel_time_h_berlin')
+        t_h = item.get('est_travel_time_h_hamburg')
+        d_b = item.get('distance_km_berlin')
+        d_h = item.get('distance_km_hamburg')
+        within = False
+        # check travel time first (<= 2.0 hours)
+        if t_b is not None and t_b <= 2.0:
+            within = True
+        if t_h is not None and t_h <= 2.0:
+            within = True
+        # fallback to distance if travel time not available
+        if d_b is not None and d_b <= MAX_DISTANCE_KM:
+            within = True
+        if d_h is not None and d_h <= MAX_DISTANCE_KM:
+            within = True
+        if not within:
+            reasons.append('too_far')
     else:
         reasons.append('no_geocode')
 
@@ -129,22 +140,16 @@ def main():
         if scored['passes_filters']:
             exported_items.append(scored)
         else:
-                    # Review criteria (more permissive):
-        # - allow review if reasons are only land/geocode related (including land_too_small)
-        # - OR if it looks like a house (keywords) but missing land_m2 or geocode
-        reason_set = set(reasons)
-        fatal_reasons = {'price>max','living_too_small','rooms_too_few','no_price','no_rooms','not_house_keyword','denkmal'}
-        review_allowed = {'no_land_m2','no_geocode','land_too_small'}
-        txt_lower = ((scored.get('raw_text') or '') + ' ' + (scored.get('title') or '')).lower()
-
-        looks_like_house = any(k in txt_lower for k in ['haus','einfamilienhaus','freistehend','freisteh','bauernhaus','landhaus','bungalow','grundstueck','grundstück'])
-
-        # Condition A: no fatal reasons present AND all reasons are (only) review_allowed
-        if reason_set and reason_set.isdisjoint(fatal_reasons) and reason_set.issubset(review_allowed):
-            review_items.append(scored)
-        # Condition B: looks like a house, and fails only for land/geocode or land small
-        elif looks_like_house and reason_set.isdisjoint(fatal_reasons):
-            review_items.append(scored)
+            # Review criteria (more permissive):
+            reason_set = set(reasons)
+            fatal_reasons = {'price>max','living_too_small','rooms_too_few','no_price','no_rooms','not_house_keyword','denkmal'}
+            review_allowed = {'no_land_m2','no_geocode','land_too_small'}
+            txt_lower = ((scored.get('raw_text') or '') + ' ' + (scored.get('title') or '')).lower()
+            looks_like_house = any(k in txt_lower for k in ['haus','einfamilienhaus','freistehend','freisteh','bauernhaus','landhaus','bungalow','grundstueck','grundstück'])
+            if reason_set and reason_set.isdisjoint(fatal_reasons) and reason_set.issubset(review_allowed):
+                review_items.append(scored)
+            elif looks_like_house and reason_set.isdisjoint(fatal_reasons):
+                review_items.append(scored)
 
     save_db(db)
 
