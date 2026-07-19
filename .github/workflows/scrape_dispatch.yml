@@ -1,22 +1,100 @@
 name: Scrape dispatch
 
-on: workflow_dispatch: inputs: ebay_seed_start: description: 'Seed start index (0-based)' required: false default: '0' ebay_seed_count: description: 'Number of seeds to process' required: false default: '1' ebay_max_candidates: description: 'Max candidates per seed' required: false default: '60' ebay_delay_min: description: 'Delay min seconds' required: false default: '10' ebay_delay_max: description: 'Delay max seconds' required: false default: '30' ebay_max_pages: description: 'Max pages per seed' required: false default: '1' max_candidates: description: 'Global max candidates across seeds (fallback)' required: false default: '200' travel_speed_kmh: description: 'Average driving speed for travel time estimate' required: false default: '80' min_living_m2: description: 'Minimum living area (m2)' required: false default: '90' min_land_m2: description: 'Minimum land area (m2)' required: false default: '1000' max_price: description: 'Maximum price EUR' required: false default: '400000'
+on:
+  workflow_dispatch:
+    inputs:
+      ebay_seed_start:
+        description: "Seed start index (0-based)"
+        required: false
+        default: "0"
 
-jobs: scrape: runs-on: ubuntu-latest env: EBAY_SEED_START: ${{ github.event.inputs.ebay_seed_start }} EBAY_SEED_COUNT: ${{ github.event.inputs.ebay_seed_count }} EBAY_MAX_CANDIDATES_PER_SEED: ${{ github.event.inputs.ebay_max_candidates }} EBAY_DELAY_MIN: ${{ github.event.inputs.ebay_delay_min }} EBAY_DELAY_MAX: ${{ github.event.inputs.ebay_delay_max }} EBAY_MAX_PAGES: ${{ github.event.inputs.ebay_max_pages }} TRAVEL_SPEED_KMH: ${{ github.event.inputs.travel_speed_kmh }} MIN_LIVING_M2: ${{ github.event.inputs.min_living_m2 }} MIN_LAND_M2: ${{ github.event.inputs.min_land_m2 }} MAX_PRICE: ${{ github.event.inputs.max_price }} # Sensitive values via secrets NOMINATIM_USER_AGENT: ${{ secrets.NOMINATIM_USER_AGENT }} GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }} GSHEET_ID: ${{ secrets.GSHEET_ID }}
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
+      ebay_seed_count:
+        description: "Number of seeds to process"
+        required: false
+        default: "1"
 
-  - name: Set up Python
-    uses: actions/setup-python@v4
-    with:
-      python-version: '3.10'
+      ebay_max_candidates:
+        description: "Max candidates per seed"
+        required: false
+        default: "60"
 
-  - name: Install dependencies
-    run: |
-      python -m pip install --upgrade pip
-      if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      ebay_delay_min:
+        description: "Delay min seconds"
+        required: false
+        default: "10"
 
-  - name: Run scraper
-    run: |
-      python -u main.py
+      ebay_delay_max:
+        description: "Delay max seconds"
+        required: false
+        default: "30"
+
+      ebay_max_pages:
+        description: "Max pages per seed"
+        required: false
+        default: "1"
+
+      max_candidates:
+        description: "Global max candidates across seeds (fallback)"
+        required: false
+        default: "200"
+
+      travel_speed_kmh:
+        description: "Average driving speed for travel time estimate"
+        required: false
+        default: "80"
+
+      min_living_m2:
+        description: "Minimum living area (m²)"
+        required: false
+        default: "90"
+
+      min_land_m2:
+        description: "Minimum land area (m²)"
+        required: false
+        default: "1000"
+
+      max_price:
+        description: "Maximum price EUR"
+        required: false
+        default: "400000"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    env:
+      EBAY_SEED_START: ${{ github.event.inputs.ebay_seed_start }}
+      EBAY_SEED_COUNT: ${{ github.event.inputs.ebay_seed_count }}
+      EBAY_MAX_CANDIDATES_PER_SEED: ${{ github.event.inputs.ebay_max_candidates }}
+      EBAY_DELAY_MIN: ${{ github.event.inputs.ebay_delay_min }}
+      EBAY_DELAY_MAX: ${{ github.event.inputs.ebay_delay_max }}
+      EBAY_MAX_PAGES: ${{ github.event.inputs.ebay_max_pages }}
+      TRAVEL_SPEED_KMH: ${{ github.event.inputs.travel_speed_kmh }}
+      MIN_LIVING_M2: ${{ github.event.inputs.min_living_m2 }}
+      MIN_LAND_M2: ${{ github.event.inputs.min_land_m2 }}
+      MAX_PRICE: ${{ github.event.inputs.max_price }}
+
+      # Sensitive values via GitHub Secrets
+      NOMINATIM_USER_AGENT: ${{ secrets.NOMINATIM_USER_AGENT }}
+      GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+      GSHEET_ID: ${{ secrets.GSHEET_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Run scraper
+        run: |
+          python -u main.py
