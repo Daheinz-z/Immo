@@ -1,12 +1,12 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import re
 import time
 import random
+import json
 import os
 
-# Kleinere UA‑Liste
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
     " Chrome/118.0.0.0 Safari/537.36",
@@ -22,11 +22,12 @@ COMMON_HEADERS = {
     "Connection": "keep-alive",
 }
 
-# Pfade, die wir als Kategorie/Service-Seiten ausschließen wollen
-EXCLUDE_PATH_PATTERNS = [
-    '/immobilienportal/', '/leistungen/', '/kontakt', '/impressum', '/datenschutz',
-    '/rss', '/suche', '/search', '/kategorie', '/category', '/tag/', '/page/'
-]
+DETAIL_PATH_KEYWORD = '/immobilienportal/detail/'
+
+PRICE_RE = re.compile(r'(?:Preis|Kaufpreis|€)\s*[:\-]?\s*([0-9\s\.\,]+)\s*€?', re.IGNORECASE)
+AREA_RE = re.compile(r'([0-9]{1,4}(?:[.,][0-9]+)?)\s*(?:m²|m2|qm)', re.IGNORECASE)
+LAND_RE = re.compile(r'(?:Grundstück|Grundst(ü|ue)ck|Grundstueck(?:sfläche)?)[:]?[\s]*([0-9\.\s,]+)\s*(?:m²|m2|qm|m)?', re.IGNORECASE)
+ROOMS_RE = re.compile(r'([0-9]+(?:[.,]5)?)\s*(?:Zimmer|rooms)', re.IGNORECASE)
 
 class ImmofuxScraper:
     def __init__(self, delay_min=1.0, delay_max=3.0, max_retries=3):
@@ -57,7 +58,9 @@ class ImmofuxScraper:
                     last_exc = requests.exceptions.HTTPError("403")
                     self._sleep()
                     continue
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    # allow caller to handle 404 for single pages gracefully
+                    raise requests.exceptions.HTTPError(f"{resp.status_code} Client Error: {resp.reason} for url: {url}")
                 return resp
             except requests.exceptions.RequestException as e:
                 print(f"[DEBUG] request exception for {url} (attempt {attempt}): {e}")
@@ -66,21 +69,133 @@ class ImmofuxScraper:
         print(f"[ERROR] Failed to fetch {url} after {self.max_retries} attempts: {last_exc}")
         return None
 
-    def _looks_like_listing(self, text):
-        # einfache Heuristiken: Preis, m², Zimmer oder 'Expose' vorkommen
-        if not text:
+    def _is_same_host(self, url, base_host):
+        try:
+            return urlparse(url).netloc == base_host
+        except Exception:
             return False
-        t = text.lower()
-        if '€' in t or 'kaufpreis' in t or 'kaltmiete' in t or 'zimmer' in t or 'm²' in t or 'exposé' in t or 'expose' in t:
-            return True
-        return False
 
-    def _is_excluded_path(self, href):
-        low = href.lower()
-        for p in EXCLUDE_PATH_PATTERNS:
-            if p in low:
-                return True
-        return False
+    def _extract_from_jsonld(self, soup):
+        # return dict with possible keys: title, price_raw, area_raw, land_raw, rooms_raw, address_raw, lat, lng
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                txt = script.string
+                if not txt:
+                    continue
+                data = json.loads(txt)
+                # data can be list or dict
+                docs = data if isinstance(data, list) else [data]
+                for doc in docs:
+                    # try to find an object that looks like an Offer / Residence / Product
+                    if not isinstance(doc, dict):
+                        continue
+                    # sometimes nested under 'mainEntity'
+                    candidates = [doc]
+                    if 'mainEntity' in doc and isinstance(doc['mainEntity'], dict):
+                        candidates.append(doc['mainEntity'])
+                    for c in candidates:
+                        if not isinstance(c, dict):
+                            continue
+                        # extract name/title
+                        title = c.get('name') or c.get('headline') or None
+                        # price
+                        price = None
+                        if 'offers' in c:
+                            offers = c['offers']
+                            if isinstance(offers, dict):
+                                price = offers.get('price') or offers.get('priceSpecification', {}).get('price')
+                        if not price and 'price' in c:
+                            price = c.get('price')
+                        # address
+                        address = None
+                        if 'address' in c and isinstance(c['address'], dict):
+                            a = c['address']
+                            addr_parts = []
+                            for k in ('streetAddress','postalCode','addressLocality','addressRegion','addressCountry'):
+                                if a.get(k):
+                                    addr_parts.append(str(a.get(k)))
+                            address = ', '.join(addr_parts) if addr_parts else None
+                        # geo
+                        lat = None; lng = None
+                        if 'geo' in c and isinstance(c['geo'], dict):
+                            try:
+                                lat = float(c['geo'].get('latitude') or c['geo'].get('lat'))
+                                lng = float(c['geo'].get('longitude') or c['geo'].get('lon') or c['geo'].get('lng'))
+                            except Exception:
+                                lat = None; lng = None
+                        # area/rooms heuristics
+                        area = None
+                        rooms = None
+                        # sometimes has floorSize or numberOfRooms
+                        if 'floorSize' in c:
+                            fs = c['floorSize']
+                            if isinstance(fs, dict) and 'value' in fs:
+                                area = str(fs.get('value'))
+                            elif isinstance(fs, (int,float,str)):
+                                area = str(fs)
+                        if 'numberOfRooms' in c:
+                            rooms = str(c.get('numberOfRooms'))
+                        out = {}
+                        if title: out['title'] = title
+                        if price: out['price_raw'] = str(price)
+                        if area: out['area_raw'] = str(area)
+                        if rooms: out['rooms_raw'] = str(rooms)
+                        if address: out['addr_raw'] = address
+                        if lat and lng:
+                            out['lat'] = lat; out['lng'] = lng
+                        if out:
+                            return out
+            except Exception:
+                continue
+        return {}
+
+    def _extract_fallbacks(self, soup, text):
+        out = {}
+        # title
+        title = None
+        h1 = soup.find('h1')
+        if h1 and h1.get_text(strip=True):
+            title = h1.get_text(strip=True)
+        else:
+            og = soup.find('meta', property='og:title')
+            if og and og.get('content'):
+                title = og.get('content')
+        if title:
+            out['title'] = title
+
+        # price: try specific elements with class names first
+        price_text = None
+        # common class keywords
+        possible_price = soup.select_one('[class*="price"], [id*="price"], [class*="preis"], [id*="preis"]')
+        if possible_price:
+            price_text = possible_price.get_text(separator=' ', strip=True)
+        if not price_text:
+            # fallback to regex on whole text, but prefer nearby context: search within first 6k chars to be faster
+            m = PRICE_RE.search(text[:6000])
+            if m:
+                price_text = m.group(0)
+        if price_text:
+            # extract numeric part
+            m2 = PRICE_RE.search(price_text)
+            out['price_raw'] = m2.group(1) if m2 else price_text
+
+        # living area
+        m_area = AREA_RE.search(text)
+        if m_area:
+            out['area_raw'] = m_area.group(0)  # keep full match (e.g. "120 m²")
+        # land area
+        m_land = LAND_RE.search(text)
+        if m_land:
+            out['land_raw'] = m_land.group(1)
+        # rooms
+        m_rooms = ROOMS_RE.search(text)
+        if m_rooms:
+            out['rooms_raw'] = m_rooms.group(1)
+        # address heuristics: look for postal code + locality
+        m_addr = re.search(r'\\b(\\d{5})\\b\\s*,?\\s*([A-Za-zÄÖÜäöüß\\-\\s]{3,60})', text)
+        if m_addr:
+            out['addr_raw'] = f"{m_addr.group(1)} {m_addr.group(2).strip()}"
+        return out
 
     def fetch_listings(self, start_url):
         print(f'Fetching search page: {start_url}')
@@ -89,25 +204,23 @@ class ImmofuxScraper:
             print(f"[WARN] Could not fetch search page {start_url} (likely blocked). Returning empty list.")
             return []
 
+        base_host = urlparse(start_url).netloc
         soup = BeautifulSoup(resp.text, 'html.parser')
         anchors = soup.find_all('a', href=True)
         candidates = set()
 
         for a in anchors:
-            href = a['href']
+            href = a['href'].strip()
             full = urljoin(start_url, href)
-            # ausschließen, wenn Pfad typische Kategorie/Service-Seite ist
-            if self._is_excluded_path(full):
+            # only same host
+            if not self._is_same_host(full, base_host):
                 continue
-            # heuristische Auswahl: prefer links that contain 'objekt', 'angebot', 'immobilie', 'expose'
-            if any(k in href.lower() for k in ['/objekt', '/angebot', '/immobilie', '/expose', '/inserat', '/angebot/']):
-                candidates.add(full)
-            # fallback: links that look like they have an id or slug (heuristisch)
-            elif re.search(r'/[a-z0-9\\-]+(?:\\d{2,6})?/?$', href, re.IGNORECASE):
+            # strong filter: we only accept links that look like detail pages
+            if DETAIL_PATH_KEYWORD in full.lower():
                 candidates.add(full)
 
         listings = []
-        for url in list(candidates)[:80]:  # etwas großzügiger limitieren, aber höflich bleiben
+        for url in list(candidates)[:120]:  # safe limit
             try:
                 print('Fetching detail:', url)
                 self._sleep()
@@ -117,44 +230,37 @@ class ImmofuxScraper:
                     continue
                 detail_soup = BeautifulSoup(rr.text, 'html.parser')
                 text = detail_soup.get_text(separator=' ', strip=True)
-                # check if this page actually looks like a listing
-                if not self._looks_like_listing(text):
-                    print(f"[INFO] Skipping {url} — doesn't look like a listing (no price/area/rooms).")
+
+                # first try JSON-LD extraction
+                parsed = self._extract_from_jsonld(detail_soup) or {}
+                # then fill fallbacks for missing fields
+                fallback = self._extract_fallbacks(detail_soup, text)
+                # merge (fallback only fills missing keys)
+                for k, v in fallback.items():
+                    if k not in parsed or not parsed.get(k):
+                        parsed[k] = v
+
+                # final sanity: require at least a price or area or rooms to treat as listing
+                if not any(parsed.get(k) for k in ('price_raw','area_raw','rooms_raw','title')):
+                    print(f"[INFO] Skipping {url} — not enough listing signals (no price/area/rooms/title).")
                     continue
-                title = detail_soup.title.string.strip() if detail_soup.title else None
-                price = self._find_price(text)
-                area = self._find_area(text)
-                rooms = self._find_rooms(text)
-                listings.append({
+
+                # build output dict with canonical keys expected by normalizer/main
+                item = {
                     'source': 'immofux',
                     'url': url,
-                    'title': title,
+                    'title': parsed.get('title'),
                     'raw_text': text,
-                    'price_raw': price,
-                    'area_raw': area,
-                    'rooms_raw': rooms,
-                })
+                    'price_raw': parsed.get('price_raw'),
+                    'area_raw': parsed.get('area_raw'),
+                    'rooms_raw': parsed.get('rooms_raw'),
+                    # keep land_raw separately; normalizer will attempt to parse it
+                    'land_raw': parsed.get('land_raw') or None,
+                    'addr_raw': parsed.get('addr_raw') or None,
+                    'lat': parsed.get('lat') if parsed.get('lat') is not None else None,
+                    'lng': parsed.get('lng') if parsed.get('lng') is not None else None,
+                }
+                listings.append(item)
             except Exception as e:
-                print('Failed to fetch', url, e)
+                print('Failed to fetch/parse', url, e)
         return listings
-
-    def _find_price(self, text):
-        m = re.search(r'(?:Preis|Kaufpreis|€)\s*[:\-]??\s*([0-9\s\.\,]+)\s*€?', text)
-        if m:
-            return m.group(1)
-        m2 = re.search(r'([0-9]{1,3}(?:[\.\s][0-9]{3})*)(?:\s*€)', text)
-        if m2:
-            return m2.group(1)
-        return None
-
-    def _find_area(self, text):
-        m = re.search(r'([0-9]{2,4}[,\.]?[0-9]*)\s*m2|m²', text)
-        if m:
-            return m.group(1)
-        return None
-
-    def _find_rooms(self, text):
-        m = re.search(r'([0-9]+(?:[,\.]5)?)\s*(?:Zimmer|rooms)', text)
-        if m:
-            return m.group(1)
-        return None
