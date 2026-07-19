@@ -37,7 +37,6 @@ def save_db(db):
 def matches_must_criteria(item):
     reasons = []
 
-    # price
     if item.get('price_eur') is None:
         reasons.append('no_price')
     else:
@@ -47,7 +46,6 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('price_parse_error')
 
-    # living area
     if item.get('living_m2') is None:
         reasons.append('no_living_m2')
     else:
@@ -57,7 +55,6 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('living_parse_error')
 
-    # land area (only check if present)
     if item.get('land_m2') is None:
         reasons.append('no_land_m2')
     else:
@@ -67,7 +64,6 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('land_parse_error')
 
-    # rooms
     if item.get('rooms') is None:
         reasons.append('no_rooms')
     else:
@@ -77,17 +73,14 @@ def matches_must_criteria(item):
         except Exception:
             reasons.append('rooms_parse_error')
 
-    # denkmalschutz
     txt = (item.get('raw_text') or '').lower()
     if 'denkmal' in txt or 'denkmalgeschützt' in txt or 'denkmalschutz' in txt:
         reasons.append('denkmal')
 
-    # object type heuristics: require keywords indicating house + land
     must_keywords = ['haus', 'einfamilienhaus', 'freistehend', 'freistehendes', 'alleinsteh', 'bauernhaus', 'landhaus', 'bungalow', 'grundstueck', 'grundstück']
     if not any(k in txt for k in must_keywords):
         reasons.append('not_house_keyword')
 
-    # geo distance check (if available)
     lat = item.get('lat'); lng = item.get('lng')
     if lat and lng:
         try:
@@ -116,6 +109,7 @@ def main():
 
     new_items = []
     exported_items = []
+    review_items = []
     for raw in raw_list:
         ident = raw.get('url') or raw.get('title')
         if not ident:
@@ -123,7 +117,6 @@ def main():
         if ident in db['seen']:
             continue
         norm = normalize_listing(raw)
-        # geocode (with cache) — geocode_item will attempt addr_raw / PLZ+city / fallback
         norm = geocode_item(norm)
         scored = score_listing(norm)
         scored['date_found'] = datetime.utcnow().isoformat() + 'Z'
@@ -135,16 +128,20 @@ def main():
         db['seen'][ident] = True
         if scored['passes_filters']:
             exported_items.append(scored)
+        else:
+            # review if failing ONLY due to missing land or missing geocode (or both)
+            fatal = {'price>max','living_too_small','rooms_too_few','no_price','no_rooms','not_house_keyword','denkmal','no_living_m2'}
+            reason_set = set(reasons)
+            if reason_set and reason_set.issubset({'no_land_m2','no_geocode'}):
+                review_items.append(scored)
 
     save_db(db)
 
-    # Export both Parsed (all new) and Listings (only matches)
     try:
-        export_to_sheet(new_items, exported_items)
-        print(f"Exported parsed {len(new_items)} items; exported {len(exported_items)} matching items to Google Sheet")
+        export_to_sheet(new_items, exported_items, review_items if review_items else None)
+        print(f"Exported parsed {len(new_items)} items; exported {len(exported_items)} matching items; {len(review_items)} review items to Google Sheet")
     except Exception as e:
         print('Export failed', e)
-        # Keep run successful, but log error
 
 if __name__ == '__main__':
     main()
