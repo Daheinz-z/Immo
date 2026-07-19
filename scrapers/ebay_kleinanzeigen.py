@@ -6,6 +6,7 @@ import time
 import random
 import json
 import os
+import unicodedata
 
 # Basic regexes similar to immofux
 PRICE_RE = re.compile(r'(?:Preis|Kaufpreis|€)\s*[:\-]?\s*([0-9\s\.\,]+)\s*€?', re.IGNORECASE)
@@ -35,6 +36,7 @@ NON_LOCATION_TOKENS = set(['video','top','neu','bild','bilder','image','images',
 
 # Default skip cache path
 DEFAULT_SKIP_CACHE = 'storage/ebay_skip_cache.json'
+DEFAULT_PLZ_CACHE = 'storage/plz_state_cache.json'
 
 class EbayKAScraper:
     def __init__(self, delay_min=2.0, delay_max=5.0, max_retries=3, max_pages=3):
@@ -44,8 +46,11 @@ class EbayKAScraper:
         self.max_pages = int(os.environ.get('EBAY_MAX_PAGES', str(max_pages)))
         self.session = requests.Session()
         self.skip_cache_path = os.environ.get('EBAY_SKIP_CACHE', DEFAULT_SKIP_CACHE)
+        self.plz_cache_path = os.environ.get('EBAY_PLZ_CACHE', DEFAULT_PLZ_CACHE)
         self.skip_cache = set()
+        self.plz_cache = {}
         self._load_skip_cache()
+        self._load_plz_cache()
 
     def _load_skip_cache(self):
         try:
@@ -62,6 +67,24 @@ class EbayKAScraper:
             os.makedirs(os.path.dirname(self.skip_cache_path), exist_ok=True)
             with open(self.skip_cache_path, 'w', encoding='utf-8') as f:
                 json.dump(list(self.skip_cache), f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _load_plz_cache(self):
+        try:
+            if os.path.exists(self.plz_cache_path):
+                with open(self.plz_cache_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        self.plz_cache = data
+        except Exception:
+            self.plz_cache = {}
+
+    def _save_plz_cache(self):
+        try:
+            os.makedirs(os.path.dirname(self.plz_cache_path), exist_ok=True)
+            with open(self.plz_cache_path, 'w', encoding='utf-8') as f:
+                json.dump(self.plz_cache, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -179,22 +202,96 @@ class EbayKAScraper:
             return m.group(1)
         return None
 
-    def _plz_to_state(self, plz):
-        # approximate mapping using leading two digits -> state
+    def _normalize_state(self, s):
+        if not s:
+            return None
+        s = s.strip().lower()
+        # remove diacritics
+        s = unicodedata.normalize('NFKD', s)
+        s = ''.join(c for c in s if not unicodedata.combining(c))
+        s = s.replace(' ', '-').replace('\u00df', 'ss')
+        s = s.replace('ü', 'ue').replace('ö', 'oe').replace('ä', 'ae')
+        return s
+
+    def _plz_to_state_local(self, plz):
+        """Quick prefix-based mapping for common ranges (covers all Bundesländer roughly).
+        This is conservative and used as first-pass. Returns normalized state string or None.
+        """
         try:
             prefix = int(plz[:2])
         except Exception:
             return None
-        mapping = [
-            (range(10,14), 'berlin'),
-            (range(14,17), 'brandenburg'),
-            (range(17,20), 'mecklenburg-vorpommern'),
-            (range(20,23), 'hamburg'),
-            (range(23,26), 'schleswig-holstein'),
-        ]
-        for r, state in mapping:
-            if prefix in r:
-                return state
+        # approximate ranges (by first two digits)
+        # Source: heuristic grouping of German PLZ ranges
+        if 10 <= prefix <= 13:
+            return 'berlin'
+        if 14 <= prefix <= 16:
+            return 'brandenburg'
+        if 17 <= prefix <= 19:
+            return 'mecklenburg-vorpommern'
+        if 20 <= prefix <= 22:
+            return 'hamburg'
+        if 23 <= prefix <= 25:
+            return 'schleswig-holstein'
+        if 26 <= prefix <= 31:
+            return 'niedersachsen'
+        if 32 <= prefix <= 39:
+            return 'nrw'
+        if 40 <= prefix <= 49:
+            return 'nrw'
+        if 50 <= prefix <= 59:
+            return 'nrw'
+        if 60 <= prefix <= 65:
+            return 'hessen'
+        if 66 <= prefix <= 69:
+            return 'rheinland-pfalz'
+        if 70 <= prefix <= 79:
+            return 'baden-wuerttemberg'
+        if 80 <= prefix <= 97:
+            return 'bayern'
+        if 98 <= prefix <= 99:
+            return 'thuringen'
+        return None
+
+    def _plz_to_state(self, plz):
+        # check cache first
+        if not plz:
+            return None
+        if plz in self.plz_cache:
+            return self.plz_cache[plz]
+
+        # try local heuristic
+        mapped = self._plz_to_state_local(plz)
+        if mapped:
+            self.plz_cache[plz] = mapped
+            self._save_plz_cache()
+            return mapped
+
+        # fallback: use Nominatim if available (and NOMINATIM_USER_AGENT set)
+        ua = os.environ.get('NOMINATIM_USER_AGENT') or os.environ.get('NOMINATIM_USER_AGENT', None)
+        if not ua:
+            # no user agent for Nominatim, cannot perform lookup
+            self.plz_cache[plz] = None
+            self._save_plz_cache()
+            return None
+
+        try:
+            params = {'postalcode': plz, 'country': 'Germany', 'format': 'jsonv2', 'limit': 1}
+            headers = {'User-Agent': ua}
+            resp = requests.get('https://nominatim.openstreetmap.org/search', params=params, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                j = resp.json()
+                if isinstance(j, list) and len(j) > 0:
+                    addr = j[0].get('address', {})
+                    state = addr.get('state') or addr.get('region') or addr.get('county')
+                    ns = self._normalize_state(state)
+                    self.plz_cache[plz] = ns
+                    self._save_plz_cache()
+                    return ns
+        except Exception:
+            pass
+        self.plz_cache[plz] = None
+        self._save_plz_cache()
         return None
 
     def _listing_location_text(self, a_tag):
@@ -308,8 +405,9 @@ class EbayKAScraper:
                 else:
                     break
 
-        # persist skip cache
+        # persist skip cache and plz cache
         self._save_skip_cache()
+        self._save_plz_cache()
 
         print(f"[ebay-ka] Total candidate detail URLs collected: {len(candidates)} (limiting to {max_candidates})")
 
