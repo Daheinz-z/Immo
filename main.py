@@ -12,11 +12,13 @@ from datetime import datetime
 STORAGE_PATH = 'storage/db.json'
 # keep previous SEARCH_URL for immofux
 IMMOFUX_SEARCH_URL = 'https://immofux.de/'
-# seed URLs for eBay Kleinanzeigen (from user)
+# seed URLs for eBay Kleinanzeigen (by Bundesland)
 EBAY_SEEDS = [
-    'https://www.kleinanzeigen.de/s-haus-kaufen/c208',
-    'https://www.kleinanzeigen.de/s-ferienwohnung-ferienhaus/kaufen/c275+ferienwohnung_ferienhaus.art_s:kaufen',
-    'https://www.kleinanzeigen.de/s-immobilien/sonstiges/c198'
+    'https://www.kleinanzeigen.de/s-haus-kaufen/berlin/c208',
+    'https://www.kleinanzeigen.de/s-haus-kaufen/brandenburg/c208',
+    'https://www.kleinanzeigen.de/s-haus-kaufen/mecklenburg-vorpommern/c208',
+    'https://www.kleinanzeigen.de/s-haus-kaufen/schleswig-holstein/c208',
+    'https://www.kleinanzeigen.de/s-haus-kaufen/hamburg/c208'
 ]
 
 # Thresholds (anpassbar)
@@ -33,6 +35,8 @@ EBAY_SEED_START = int(os.environ.get('EBAY_SEED_START', '0'))
 EBAY_SEED_COUNT = int(os.environ.get('EBAY_SEED_COUNT', str(len(EBAY_SEEDS))))
 # Max candidate detail URLs per seed (to limit work per run)
 EBAY_MAX_CANDIDATES_PER_SEED = int(os.environ.get('EBAY_MAX_CANDIDATES_PER_SEED', '120'))
+# Allowed states (CSV). Default to the five target Bundesländer.
+EBAY_ALLOWED_STATES = os.environ.get('EBAY_ALLOWED_STATES', 'Berlin,Brandenburg,Mecklenburg-Vorpommern,Schleswig-Holstein,Hamburg')
 
 # keep previous defaults for scraper; ebay scraper will also read EBAY_MAX_PAGES, EBAY_DELAY_MIN/MAX
 
@@ -151,8 +155,8 @@ def main():
         ebay = EbayKAScraper()
         for seed in selected_seeds:
             try:
-                # respect per-seed max candidates
-                items = ebay.fetch_listings([seed], max_candidates=EBAY_MAX_CANDIDATES_PER_SEED)
+                # respect per-seed max candidates and allowed states
+                items = ebay.fetch_listings([seed], max_candidates=EBAY_MAX_CANDIDATES_PER_SEED, allowed_states=EBAY_ALLOWED_STATES)
                 ebay_items.extend(items)
             except Exception as e:
                 print(f'eBay KA fetch failed for seed {seed}:', e)

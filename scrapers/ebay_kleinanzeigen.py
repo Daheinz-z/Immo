@@ -143,15 +143,39 @@ class EbayKAScraper:
             out['addr_raw'] = og.get('content')
         return out
 
-    def fetch_listings(self, seed_urls, max_candidates=200):
+    def _listing_location_text(self, a_tag):
+        # Try to find a nearby location text in the search result teaser
+        parent = a_tag.parent
+        for _ in range(4):
+            if not parent:
+                break
+            loc = parent.select_one('[class*="location"], [class*="region"], [class*="ort"], .aditem-location, .simple-ad-location, .aditem-main--location')
+            if loc and loc.get_text(strip=True):
+                return loc.get_text(' ', strip=True)
+            parent = parent.parent
+        # fallback: next sibling text
+        sib = a_tag.find_next_sibling()
+        if sib:
+            s = sib.get_text(' ', strip=True)
+            if s:
+                return s
+        return None
+
+    def fetch_listings(self, seed_urls, max_candidates=200, allowed_states=None):
         """
         seed_urls: list of search result URLs
+        allowed_states: CSV string of allowed state names (e.g. 'Berlin,Brandenburg')
         returns list of raw listing dicts similar to ImmofuxScraper
         """
         if isinstance(seed_urls, str):
             seed_urls = [seed_urls]
         candidates = []
         seen = set()
+
+        # prepare allowed states
+        allowed_states_list = []
+        if allowed_states:
+            allowed_states_list = [s.strip().lower() for s in allowed_states.split(',') if s.strip()]
 
         for seed in seed_urls:
             print(f"[ebay-ka] Fetching search page: {seed}")
@@ -167,6 +191,15 @@ class EbayKAScraper:
                     href = a['href'].strip()
                     full = urljoin(seed, href)
                     if DETAIL_PATH_KEY in full and full not in seen:
+                        # try to infer location from teaser and skip if outside allowed states
+                        loc_text = self._listing_location_text(a)
+                        if loc_text and allowed_states_list:
+                            # if none of the allowed states appear in the location text, skip
+                            if not any(state in loc_text.lower() for state in allowed_states_list):
+                                # conservative default: if loc_text exists and doesn't match, skip
+                                print(f"[ebay-ka] Skipping {full} due to location '{loc_text}' not in allowed states")
+                                continue
+                        # if no loc_text, conservative behavior = include
                         seen.add(full)
                         candidates.append(full)
                         if len(candidates) >= max_candidates:
@@ -177,7 +210,7 @@ class EbayKAScraper:
                 if nl and nl.get('href'):
                     next_link = urljoin(seed, nl.get('href'))
                 else:
-                    # heuristic: find links with 'seite' or 'page' in href
+                    # heuristic: find links with 'page=' in href
                     for a in anchors:
                         h = a['href']
                         if 'page=' in h or 'seite' in h.lower():
