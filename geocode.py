@@ -8,7 +8,7 @@ from math import radians, cos, sin, asin, sqrt
 NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
 CACHE_PATH = 'storage/geocode_cache.json'
 SLEEP_BETWEEN_LOOKUPS = float(os.environ.get('NOMINATIM_SLEEP', '1.1'))
-USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (kontakt@example.com)')
+USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (david.heinz92@gmail.com)')
 
 AVERAGE_SPEED_KMH = float(os.environ.get('TRAVEL_SPEED_KMH', '80'))
 BERLIN_COORD = (52.5200, 13.4050)
