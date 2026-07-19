@@ -37,6 +37,8 @@ EBAY_SEED_COUNT = int(os.environ.get('EBAY_SEED_COUNT', str(len(EBAY_SEEDS))))
 EBAY_MAX_CANDIDATES_PER_SEED = int(os.environ.get('EBAY_MAX_CANDIDATES_PER_SEED', '120'))
 # Allowed states (CSV). Default to the five target Bundesländer.
 EBAY_ALLOWED_STATES = os.environ.get('EBAY_ALLOWED_STATES', 'Berlin,Brandenburg,Mecklenburg-Vorpommern,Schleswig-Holstein,Hamburg')
+# Option to run Immofux scraper (default: true). Set RUN_IMMOFUX=0 to skip immofux.
+RUN_IMMOFUX = os.environ.get('RUN_IMMOFUX', '1')
 
 # keep previous defaults for scraper; ebay scraper will also read EBAY_MAX_PAGES, EBAY_DELAY_MIN/MAX
 
@@ -137,13 +139,17 @@ def matches_must_criteria(item):
 def main():
     db = load_db()
 
-    # run immofux as before
-    immofux = ImmofuxScraper()
-    try:
-        immofux_items = immofux.fetch_listings(IMMOFUX_SEARCH_URL)
-    except Exception as e:
-        print('Immofux fetch failed:', e)
-        immofux_items = []
+    # run immofux optionally
+    immofux_items = []
+    if RUN_IMMOFUX == '1':
+        immofux = ImmofuxScraper()
+        try:
+            immofux_items = immofux.fetch_listings(IMMOFUX_SEARCH_URL)
+        except Exception as e:
+            print('Immofux fetch failed:', e)
+            immofux_items = []
+    else:
+        print('Skipping Immofux scraper this run (RUN_IMMOFUX != 1)')
 
     # decide which ebay seeds to run this invocation (slice using EBAY_SEED_START/COUNT)
     seed_start = EBAY_SEED_START

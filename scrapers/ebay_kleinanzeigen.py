@@ -29,6 +29,9 @@ COMMON_HEADERS = {
 
 DETAIL_PATH_KEY = '/s-anzeige/'
 
+# tokens that commonly appear in teaser location fields but are not real locations
+NON_LOCATION_TOKENS = set(['video','top','neu','bild','bilder','image','images','mehr','anzeigen','vor 1 stunde','vor 2 stunden'])
+
 class EbayKAScraper:
     def __init__(self, delay_min=2.0, delay_max=5.0, max_retries=3, max_pages=3):
         self.delay_min = float(os.environ.get('EBAY_DELAY_MIN', str(delay_min)))
@@ -151,13 +154,22 @@ class EbayKAScraper:
                 break
             loc = parent.select_one('[class*="location"], [class*="region"], [class*="ort"], .aditem-location, .simple-ad-location, .aditem-main--location')
             if loc and loc.get_text(strip=True):
-                return loc.get_text(' ', strip=True)
+                txt = loc.get_text(' ', strip=True)
+                low = txt.lower().strip()
+                # ignore common non-location tokens
+                if low in NON_LOCATION_TOKENS:
+                    return None
+                # short tokens like 'DE' or single words might still be ok; return if looks like location
+                return txt
             parent = parent.parent
         # fallback: next sibling text
         sib = a_tag.find_next_sibling()
         if sib:
             s = sib.get_text(' ', strip=True)
             if s:
+                low = s.lower().strip()
+                if low in NON_LOCATION_TOKENS:
+                    return None
                 return s
         return None
 
@@ -194,8 +206,9 @@ class EbayKAScraper:
                         # try to infer location from teaser and skip if outside allowed states
                         loc_text = self._listing_location_text(a)
                         if loc_text and allowed_states_list:
-                            # if none of the allowed states appear in the location text, skip
-                            if not any(state in loc_text.lower() for state in allowed_states_list):
+                            # normalize location text
+                            lt = loc_text.lower()
+                            if not any(state in lt for state in allowed_states_list):
                                 # conservative default: if loc_text exists and doesn't match, skip
                                 print(f"[ebay-ka] Skipping {full} due to location '{loc_text}' not in allowed states")
                                 continue
