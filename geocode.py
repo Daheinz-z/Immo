@@ -7,8 +7,7 @@ from math import radians, cos, sin, asin, sqrt
 NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
 CACHE_PATH = 'storage/geocode_cache.json'
 SLEEP_BETWEEN_LOOKUPS = float(os.environ.get('NOMINATIM_SLEEP', '1.1'))
-# Read user agent from env (recommended to set as secret)
-USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (david.heinz92@gmail.com)')
+USER_AGENT = os.environ.get('NOMINATIM_USER_AGENT', 'immo-scraper/1.0 (kontakt@example.com)')
 
 def load_cache():
     if os.path.exists(CACHE_PATH):
@@ -31,7 +30,7 @@ def geocode_query(query):
     key = query.strip().lower()
     if key in cache:
         return cache[key]
-    params = {'q': query, 'format': 'json', 'limit': 1, 'addressdetails': 1}
+    params = {'q': query, 'format': 'json', 'limit': 1, 'addressdetails': 1, 'countrycodes': 'de'}
     headers = {'User-Agent': USER_AGENT, 'Accept-Language': 'de'}
     try:
         resp = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=20)
@@ -52,23 +51,18 @@ def geocode_query(query):
     return None
 
 def geocode_item(item):
-    # Prefer most precise fields: addr_raw (street + plz + city), then postal_code+city, then city, then short raw_text.
-    cache = load_cache()
-    # Build candidate queries in order
+    # Build candidate queries in order: addr_raw, postal_code+city, city, title+city, raw_text prefix
     queries = []
     if item.get('addr_raw'):
         queries.append(item.get('addr_raw'))
-    # try postal_code + city
     pc = item.get('postal_code')
     city = item.get('city')
     if pc and city:
         queries.append(f"{pc} {city}, Germany")
     if city:
         queries.append(f"{city}, Germany")
-    # short title + city
     if item.get('title') and city:
         queries.append(f"{item.get('title')}, {city}, Germany")
-    # fallback: short raw_text prefix
     rt = (item.get('raw_text') or '')[:200]
     if rt:
         queries.append(rt)
@@ -82,7 +76,6 @@ def geocode_item(item):
             item['lng'] = res['lng']
             item['geocode_display_name'] = res.get('display_name')
             return item
-    # if none matched, leave lat/lng as None
     return item
 
 def haversine_km(lat1, lon1, lat2, lon2):
