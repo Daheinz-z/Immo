@@ -41,12 +41,12 @@ def export_to_sheet(parsed_items, matching_items, review_items=None):
     try:
         sh = client.open_by_key(sheet_id)
     except SpreadsheetNotFound:
-        raise RuntimeError(f'Spreadsheet with ID \"{sheet_id}\" not found or not shared with the service account.')
+        raise RuntimeError(f'Spreadsheet with ID "{sheet_id}" not found or not shared with the service account.')
     except Exception as e:
         raise RuntimeError('Failed to open spreadsheet: ' + str(e))
 
     # Listings worksheet (only matches)
-    listings_header = ['title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng','distance_km_berlin','distance_km_hamburg']
+    listings_header = ['title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng','distance_km_berlin','distance_km_hamburg','offer_type']
     listings_ws = _ensure_worksheet(sh, 'Listings', listings_header)
 
     rows = []
@@ -65,6 +65,7 @@ def export_to_sheet(parsed_items, matching_items, review_items=None):
             it.get('lng'),
             it.get('distance_km_berlin'),
             it.get('distance_km_hamburg'),
+            it.get('offer_type'),
         ])
     if rows:
         listings_ws.append_rows(rows, value_input_option='RAW')
@@ -72,7 +73,7 @@ def export_to_sheet(parsed_items, matching_items, review_items=None):
     # Parsed worksheet (all parsed items + reasons)
     parsed_header = [
         'title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng',
-        'distance_km_berlin','distance_km_hamburg','passes_filters','filter_reasons','addr_raw','raw_text'
+        'distance_km_berlin','distance_km_hamburg','passes_filters','filter_reasons','addr_raw','raw_text','offer_type','city_cleaned'
     ]
     parsed_ws = _ensure_worksheet(sh, 'Parsed', parsed_header)
 
@@ -95,7 +96,9 @@ def export_to_sheet(parsed_items, matching_items, review_items=None):
             it.get('passes_filters'),
             ', '.join(it.get('filter_reasons') or []),
             it.get('addr_raw'),
-            (it.get('raw_text') or '')[:1000],
+            (it.get('raw_text') or '')[:1000],  # limit size for sheets
+            it.get('offer_type'),
+            it.get('city_cleaned')
         ])
     if parsed_rows:
         parsed_ws.append_rows(parsed_rows, value_input_option='RAW')
@@ -104,7 +107,7 @@ def export_to_sheet(parsed_items, matching_items, review_items=None):
     if review_items:
         review_header = [
             'title','living_m2','land_m2','city','price_eur','rooms','condition','date_found','url','lat','lng',
-            'distance_km_berlin','distance_km_hamburg','passes_filters','filter_reasons','addr_raw','raw_text'
+            'distance_km_berlin','distance_km_hamburg','passes_filters','filter_reasons','addr_raw','raw_text','offer_type','city_cleaned'
         ]
         review_ws = _ensure_worksheet(sh, 'Review', review_header)
         review_rows = []
@@ -127,6 +130,8 @@ def export_to_sheet(parsed_items, matching_items, review_items=None):
                 ', '.join(it.get('filter_reasons') or []),
                 it.get('addr_raw'),
                 (it.get('raw_text') or '')[:1000],
+                it.get('offer_type'),
+                it.get('city_cleaned'),
             ])
         if review_rows:
             review_ws.append_rows(review_rows, value_input_option='RAW')

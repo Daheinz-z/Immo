@@ -88,6 +88,30 @@ def condition_from_text(text):
         return 'Renovierungsbedürftig'
     return 'Unbekannt'
 
+def _detect_offer_type(title, text):
+    s = ((title or '') + ' ' + (text or '')).lower()
+    # Keywords für Miete
+    rent_kw = [
+        'miete', 'mieten', 'vermiet', 'kaltmiete', 'warmmiete', 'monat', 'mietpreis',
+        'zu vermieten', 'gesucht: mieter', 'pro monat', 'monatliche'
+    ]
+    # Keywords für Kauf
+    sale_kw = [
+        'kauf', 'kaufen', 'verkauf', 'verkaufen', 'kaufpreis', 'zum kauf', 'zu verkaufen',
+        'kaufobjekt', 'verkaufsobjekt', 'provisionsfrei', 'verkauf wird'
+    ]
+    # Prefer explicit sale keywords
+    if any(k in s for k in sale_kw):
+        return 'sale'
+    # If rental keywords present and no sale keyword, mark as rent
+    if any(k in s for k in rent_kw) and not any(k in s for k in sale_kw):
+        return 'rent'
+    # If price mentions only rent units (€/Monat etc.), mark rent
+    if '€/monat' in s or '€ pro monat' in s or 'monatl' in s:
+        return 'rent'
+    # fallback unknown
+    return 'unknown'
+
 def normalize_listing(raw):
     out = {}
     out['source'] = raw.get('source')
@@ -139,5 +163,8 @@ def normalize_listing(raw):
     # ensure lat/lng placeholders exist
     out['lat'] = raw.get('lat') if raw.get('lat') is not None else None
     out['lng'] = raw.get('lng') if raw.get('lng') is not None else None
+
+    # detect offer type (sale/rent/unknown)
+    out['offer_type'] = _detect_offer_type(out.get('title'), out.get('raw_text'))
 
     return out

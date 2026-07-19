@@ -33,6 +33,10 @@ def save_db(db):
 def matches_must_criteria(item):
     reasons = []
 
+    # Only consider sale offers
+    if item.get('offer_type') != 'sale':
+        reasons.append('not_for_sale')
+
     # price
     if item.get('price_eur') is None:
         reasons.append('no_price')
