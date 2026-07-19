@@ -4,8 +4,9 @@ from urllib.parse import urljoin
 import re
 import time
 import random
+import os
 
-# Eine kleine Liste realistischer User Agents
+# Kleinere UA‑Liste
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
     " Chrome/118.0.0.0 Safari/537.36",
@@ -21,14 +22,13 @@ COMMON_HEADERS = {
     "Connection": "keep-alive",
 }
 
-class ImmofuxScraper:
-    """
-    Robustere Version des immofux-scrapers:
-    - versucht mit verschiedenen User-Agents
-    - einfache retries + randomized delays
-    - bei wiederholtem 403: zurückfallen und leere Liste zurückgeben (kein Abbruch)
-    """
+# Pfade, die wir als Kategorie/Service-Seiten ausschließen wollen
+EXCLUDE_PATH_PATTERNS = [
+    '/immobilienportal/', '/leistungen/', '/kontakt', '/impressum', '/datenschutz',
+    '/rss', '/suche', '/search', '/kategorie', '/category', '/tag/', '/page/'
+]
 
+class ImmofuxScraper:
     def __init__(self, delay_min=1.0, delay_max=3.0, max_retries=3):
         self.delay_min = delay_min
         self.delay_max = delay_max
@@ -47,15 +47,15 @@ class ImmofuxScraper:
 
     def _get(self, url, referer=None):
         last_exc = None
+        timeout = float(os.environ.get('SCRAPER_TIMEOUT', '20'))
         for attempt in range(1, self.max_retries + 1):
             try:
                 headers = self._build_headers(referer=referer or url)
-                resp = self.session.get(url, headers=headers, timeout=20)
-                # Wenn 403: versuche nochmal mit anderem UA nach kurzem Backoff
+                resp = self.session.get(url, headers=headers, timeout=timeout)
                 if resp.status_code == 403:
-                    print(f"[WARN] 403 for {url} (attempt {attempt}), sleeping/backoff")
+                    print(f"[WARN] 403 for {url} (attempt {attempt})")
+                    last_exc = requests.exceptions.HTTPError("403")
                     self._sleep()
-                    last_exc = requests.exceptions.HTTPError(f"403 for {url}")
                     continue
                 resp.raise_for_status()
                 return resp
@@ -63,38 +63,51 @@ class ImmofuxScraper:
                 print(f"[DEBUG] request exception for {url} (attempt {attempt}): {e}")
                 last_exc = e
                 self._sleep()
-                continue
-        # nach retries: raise last exception to let caller decide or return None
         print(f"[ERROR] Failed to fetch {url} after {self.max_retries} attempts: {last_exc}")
         return None
 
+    def _looks_like_listing(self, text):
+        # einfache Heuristiken: Preis, m², Zimmer oder 'Expose' vorkommen
+        if not text:
+            return False
+        t = text.lower()
+        if '€' in t or 'kaufpreis' in t or 'kaltmiete' in t or 'zimmer' in t or 'm²' in t or 'exposé' in t or 'expose' in t:
+            return True
+        return False
+
+    def _is_excluded_path(self, href):
+        low = href.lower()
+        for p in EXCLUDE_PATH_PATTERNS:
+            if p in low:
+                return True
+        return False
+
     def fetch_listings(self, start_url):
         print(f'Fetching search page: {start_url}')
-        resp = self._get(start_url, referer=None)
+        resp = self._get(start_url)
         if resp is None:
-            # freundlich abbrechen, kein Crash => Workflow läuft weiter
             print(f"[WARN] Could not fetch search page {start_url} (likely blocked). Returning empty list.")
             return []
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-
         anchors = soup.find_all('a', href=True)
         candidates = set()
+
         for a in anchors:
             href = a['href']
-            # heuristic: listing links often contain keywords
-            if any(k in href.lower() for k in ['/objekt', '/immobilie', '/angebot', '/expose', '/listings']):
-                candidates.add(urljoin(start_url, href))
-        # fallback: take links that contain 'immobil' or 'haus'
-        if not candidates:
-            for a in anchors:
-                href = a['href']
-                if any(k in href.lower() for k in ['immobil', 'haus', 'ferien']):
-                    candidates.add(urljoin(start_url, href))
+            full = urljoin(start_url, href)
+            # ausschließen, wenn Pfad typische Kategorie/Service-Seite ist
+            if self._is_excluded_path(full):
+                continue
+            # heuristische Auswahl: prefer links that contain 'objekt', 'angebot', 'immobilie', 'expose'
+            if any(k in href.lower() for k in ['/objekt', '/angebot', '/immobilie', '/expose', '/inserat', '/angebot/']):
+                candidates.add(full)
+            # fallback: links that look like they have an id or slug (heuristisch)
+            elif re.search(r'/[a-z0-9\\-]+(?:\\d{2,6})?/?$', href, re.IGNORECASE):
+                candidates.add(full)
 
         listings = []
-        # begrenze Anzahl um freundlich zu bleiben
-        for url in list(candidates)[:40]:
+        for url in list(candidates)[:80]:  # etwas großzügiger limitieren, aber höflich bleiben
             try:
                 print('Fetching detail:', url)
                 self._sleep()
@@ -104,6 +117,10 @@ class ImmofuxScraper:
                     continue
                 detail_soup = BeautifulSoup(rr.text, 'html.parser')
                 text = detail_soup.get_text(separator=' ', strip=True)
+                # check if this page actually looks like a listing
+                if not self._looks_like_listing(text):
+                    print(f"[INFO] Skipping {url} — doesn't look like a listing (no price/area/rooms).")
+                    continue
                 title = detail_soup.title.string.strip() if detail_soup.title else None
                 price = self._find_price(text)
                 area = self._find_area(text)
