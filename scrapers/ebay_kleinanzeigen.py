@@ -11,6 +11,7 @@ import os
 PRICE_RE = re.compile(r'(?:Preis|Kaufpreis|€)\s*[:\-]?\s*([0-9\s\.\,]+)\s*€?', re.IGNORECASE)
 AREA_RE = re.compile(r'([0-9]{1,4}(?:[\.,][0-9]+)?)\s*(?:m²|m2|qm)', re.IGNORECASE)
 ROOMS_RE = re.compile(r'([0-9]+(?:[.,]5)?)\s*(?:Zimmer|rooms|Zi)', re.IGNORECASE)
+PLZ_RE = re.compile(r'\b(\d{5})\b')
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
@@ -32,6 +33,9 @@ DETAIL_PATH_KEY = '/s-anzeige/'
 # tokens that commonly appear in teaser location fields but are not real locations
 NON_LOCATION_TOKENS = set(['video','top','neu','bild','bilder','image','images','mehr','anzeigen','vor 1 stunde','vor 2 stunden'])
 
+# Default skip cache path
+DEFAULT_SKIP_CACHE = 'storage/ebay_skip_cache.json'
+
 class EbayKAScraper:
     def __init__(self, delay_min=2.0, delay_max=5.0, max_retries=3, max_pages=3):
         self.delay_min = float(os.environ.get('EBAY_DELAY_MIN', str(delay_min)))
@@ -39,6 +43,27 @@ class EbayKAScraper:
         self.max_retries = max_retries
         self.max_pages = int(os.environ.get('EBAY_MAX_PAGES', str(max_pages)))
         self.session = requests.Session()
+        self.skip_cache_path = os.environ.get('EBAY_SKIP_CACHE', DEFAULT_SKIP_CACHE)
+        self.skip_cache = set()
+        self._load_skip_cache()
+
+    def _load_skip_cache(self):
+        try:
+            if os.path.exists(self.skip_cache_path):
+                with open(self.skip_cache_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        self.skip_cache = set(data)
+        except Exception:
+            self.skip_cache = set()
+
+    def _save_skip_cache(self):
+        try:
+            os.makedirs(os.path.dirname(self.skip_cache_path), exist_ok=True)
+            with open(self.skip_cache_path, 'w', encoding='utf-8') as f:
+                json.dump(list(self.skip_cache), f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _sleep(self):
         time.sleep(self.delay_min + random.random() * (self.delay_max - self.delay_min))
@@ -146,6 +171,32 @@ class EbayKAScraper:
             out['addr_raw'] = og.get('content')
         return out
 
+    def _extract_plz_from_text(self, text):
+        if not text:
+            return None
+        m = PLZ_RE.search(text)
+        if m:
+            return m.group(1)
+        return None
+
+    def _plz_to_state(self, plz):
+        # approximate mapping using leading two digits -> state
+        try:
+            prefix = int(plz[:2])
+        except Exception:
+            return None
+        mapping = [
+            (range(10,14), 'berlin'),
+            (range(14,17), 'brandenburg'),
+            (range(17,20), 'mecklenburg-vorpommern'),
+            (range(20,23), 'hamburg'),
+            (range(23,26), 'schleswig-holstein'),
+        ]
+        for r, state in mapping:
+            if prefix in r:
+                return state
+        return None
+
     def _listing_location_text(self, a_tag):
         # Try to find a nearby location text in the search result teaser
         parent = a_tag.parent
@@ -203,16 +254,37 @@ class EbayKAScraper:
                     href = a['href'].strip()
                     full = urljoin(seed, href)
                     if DETAIL_PATH_KEY in full and full not in seen:
+                        # quick skip if we've previously marked this URL as outside allowed area
+                        if full in self.skip_cache:
+                            print(f"[ebay-ka] Skipping {full} (cached as outside allowed states)")
+                            continue
+
                         # try to infer location from teaser and skip if outside allowed states
                         loc_text = self._listing_location_text(a)
+
+                        # try to extract PLZ from href or anchor text if no loc_text
+                        plz = None
+                        if not loc_text:
+                            plz = self._extract_plz_from_text(href) or self._extract_plz_from_text(a.get_text())
+
+                        # if we have a plz, try to map to state and decide
+                        if plz:
+                            mapped = self._plz_to_state(plz)
+                            if mapped and allowed_states_list:
+                                if mapped not in allowed_states_list:
+                                    print(f"[ebay-ka] Skipping {full} due to PLZ {plz} -> state '{mapped}' not in allowed states")
+                                    self.skip_cache.add(full)
+                                    continue
+
                         if loc_text and allowed_states_list:
-                            # normalize location text
                             lt = loc_text.lower()
                             if not any(state in lt for state in allowed_states_list):
-                                # conservative default: if loc_text exists and doesn't match, skip
+                                # conservative default: if loc_text exists and doesn't match, skip and cache
                                 print(f"[ebay-ka] Skipping {full} due to location '{loc_text}' not in allowed states")
+                                self.skip_cache.add(full)
                                 continue
-                        # if no loc_text, conservative behavior = include
+
+                        # if no loc_text and no PLZ mapping, conservative behavior = include
                         seen.add(full)
                         candidates.append(full)
                         if len(candidates) >= max_candidates:
@@ -235,6 +307,9 @@ class EbayKAScraper:
                     self._sleep()
                 else:
                     break
+
+        # persist skip cache
+        self._save_skip_cache()
 
         print(f"[ebay-ka] Total candidate detail URLs collected: {len(candidates)} (limiting to {max_candidates})")
 
