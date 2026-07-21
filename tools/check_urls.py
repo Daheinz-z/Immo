@@ -13,7 +13,7 @@ Optional: set NOMINATIM_USER_AGENT if you want PLZ->state fallback lookups.
 import os
 import json
 from scrapers.ebay_kleinanzeigen import EbayKAScraper
-
+import sys, os sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(file), '..')))
 # Example: override via env var URLS="url1,url2"
 URLS_ENV = os.environ.get('URLS')
 if URLS_ENV:
