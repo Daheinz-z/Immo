@@ -38,6 +38,11 @@ NON_LOCATION_TOKENS = set(['video','top','neu','bild','bilder','image','images',
 DEFAULT_SKIP_CACHE = 'storage/ebay_skip_cache.json'
 DEFAULT_PLZ_CACHE = 'storage/plz_state_cache.json'
 
+# how many parent levels to scan for teaser info
+TEASER_SCAN_LEVELS = int(os.environ.get('EBAY_TEASER_SCAN_LEVELS', '5'))
+# enable verbose debug logs from eBay scraper
+EBAY_VERBOSE = os.environ.get('EBAY_VERBOSE', os.environ.get('EBAY_DEBUG', '0')) == '1'
+
 class EbayKAScraper:
     def __init__(self, delay_min=2.0, delay_max=5.0, max_retries=3, max_pages=3):
         self.delay_min = float(os.environ.get('EBAY_DELAY_MIN', str(delay_min)))
@@ -51,6 +56,10 @@ class EbayKAScraper:
         self.plz_cache = {}
         self._load_skip_cache()
         self._load_plz_cache()
+
+    def _debug(self, *args, **kwargs):
+        if EBAY_VERBOSE:
+            print('[ebay-ka][DEBUG]', *args, **kwargs)
 
     def _load_skip_cache(self):
         try:
@@ -296,21 +305,43 @@ class EbayKAScraper:
 
     def _listing_location_text(self, a_tag):
         # Try to find a nearby location text in the search result teaser
-        parent = a_tag.parent
-        for _ in range(4):
+        # Scan up to TEASER_SCAN_LEVELS parent levels and a few sibling nodes and attributes
+        parent = a_tag
+        for level in range(TEASER_SCAN_LEVELS):
             if not parent:
                 break
-            loc = parent.select_one('[class*="location"], [class*="region"], [class*="ort"], .aditem-location, .simple-ad-location, .aditem-main--location')
+            # check common selectors
+            try:
+                loc = parent.select_one('[class*="location"], [class*="region"], [class*="ort"], .aditem-location, .simple-ad-location, .aditem-main--location')
+            except Exception:
+                loc = None
             if loc and loc.get_text(strip=True):
                 txt = loc.get_text(' ', strip=True)
                 low = txt.lower().strip()
-                # ignore common non-location tokens
                 if low in NON_LOCATION_TOKENS:
                     return None
-                # short tokens like 'DE' or single words might still be ok; return if looks like location
                 return txt
+            # check attributes that sometimes contain location info
+            for attr in ('data-location','data-city','title','aria-label'):
+                val = parent.get(attr) if parent and hasattr(parent, 'get') else None
+                if val and isinstance(val, str) and val.strip():
+                    low = val.lower().strip()
+                    if low in NON_LOCATION_TOKENS:
+                        return None
+                    return val.strip()
+            # check images inside parent for alt/title
+            img = parent.find('img') if parent else None
+            if img:
+                for a in ('alt','title'):
+                    v = img.get(a)
+                    if v and v.strip():
+                        low = v.lower().strip()
+                        if low in NON_LOCATION_TOKENS:
+                            return None
+                        return v.strip()
+            # move up
             parent = parent.parent
-        # fallback: next sibling text
+        # fallback: check immediate siblings around anchor
         sib = a_tag.find_next_sibling()
         if sib:
             s = sib.get_text(' ', strip=True)
@@ -319,6 +350,49 @@ class EbayKAScraper:
                 if low in NON_LOCATION_TOKENS:
                     return None
                 return s
+        # very last resort: anchor text itself
+        txt = a_tag.get_text(' ', strip=True)
+        if txt:
+            low = txt.lower().strip()
+            if low in NON_LOCATION_TOKENS:
+                return None
+            return txt
+        return None
+
+    def _extract_plz_near_anchor(self, a_tag, href):
+        # search for PLZ in several nearby text blobs to improve recall
+        # 1) href
+        plz = self._extract_plz_from_text(href)
+        if plz:
+            return plz
+        # 2) anchor text
+        txt = a_tag.get_text(' ', strip=True)
+        plz = self._extract_plz_from_text(txt)
+        if plz:
+            return plz
+        # 3) parent and grandparents text (short window)
+        parent = a_tag.parent
+        for _ in range(4):
+            if not parent:
+                break
+            ptxt = parent.get_text(' ', strip=True)
+            # limit length to avoid huge blobs
+            ptxt_short = ptxt[:300]
+            plz = self._extract_plz_from_text(ptxt_short)
+            if plz:
+                return plz
+            parent = parent.parent
+        # 4) previous sibling and next sibling
+        prev = a_tag.find_previous_sibling()
+        if prev:
+            plz = self._extract_plz_from_text(prev.get_text(' ', strip=True)[:200])
+            if plz:
+                return plz
+        nexts = a_tag.find_next_siblings()
+        for n in nexts[:3]:
+            plz = self._extract_plz_from_text(n.get_text(' ', strip=True)[:200])
+            if plz:
+                return plz
         return None
 
     def fetch_listings(self, seed_urls, max_candidates=200, allowed_states=None):
@@ -362,16 +436,21 @@ class EbayKAScraper:
                         # try to extract PLZ from href or anchor text if no loc_text
                         plz = None
                         if not loc_text:
-                            plz = self._extract_plz_from_text(href) or self._extract_plz_from_text(a.get_text())
+                            plz = self._extract_plz_near_anchor(a, href)
 
-                        # if we have a plz, try to map to state and decide
+                        mapped = None
                         if plz:
                             mapped = self._plz_to_state(plz)
-                            if mapped and allowed_states_list:
-                                if mapped not in allowed_states_list:
-                                    print(f"[ebay-ka] Skipping {full} due to PLZ {plz} -> state '{mapped}' not in allowed states")
-                                    self.skip_cache.add(full)
-                                    continue
+
+                        # debug info
+                        self._debug('candidate', full, 'loc_text=', loc_text, 'plz=', plz, 'mapped=', mapped)
+
+                        # if we have a plz and mapped state, decide
+                        if mapped and allowed_states_list:
+                            if mapped not in allowed_states_list:
+                                print(f"[ebay-ka] Skipping {full} due to PLZ {plz} -> state '{mapped}' not in allowed states")
+                                self.skip_cache.add(full)
+                                continue
 
                         if loc_text and allowed_states_list:
                             lt = loc_text.lower()
@@ -382,6 +461,9 @@ class EbayKAScraper:
                                 continue
 
                         # if no loc_text and no PLZ mapping, conservative behavior = include
+                        if not loc_text and not plz:
+                            self._debug('Including candidate without loc/plz:', full)
+
                         seen.add(full)
                         candidates.append(full)
                         if len(candidates) >= max_candidates:
@@ -433,6 +515,9 @@ class EbayKAScraper:
                 if not any(parsed.get(k) for k in ('price_raw','area_raw','rooms_raw','title')):
                     print(f"[ebay-ka] Skipping {url} — not enough listing signals")
                     continue
+
+                # debug print of parsed key signals for easier tuning
+                self._debug('parsed', url, 'price=', parsed.get('price_raw'), 'area=', parsed.get('area_raw'), 'rooms=', parsed.get('rooms_raw'), 'addr=', parsed.get('addr_raw'))
 
                 item = {
                     'source': 'ebay_kleinanzeigen',
