@@ -1,0 +1,84 @@
+name: Check eBay KA URLs
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'Comma-separated detail URLs to check'
+        required: true
+        default: ''
+      nominatim_user_agent:
+        description: 'Optional: NOMINATIM_USER_AGENT for better PLZ->state fallback'
+        required: false
+        default: ''
+      ebay_verbose:
+        description: 'Enable verbose debug (1 or 0)'
+        required: false
+        default: '1'
+      ebay_skip_cache:
+        description: 'Optional: path for skip cache (eg /tmp/ebay_skip_cache_test.json)'
+        required: false
+        default: '/tmp/ebay_skip_cache_test.json'
+      ebay_plz_cache:
+        description: 'Optional: path for plz cache (eg /tmp/plz_state_cache_test.json)'
+        required: false
+        default: '/tmp/plz_state_cache_test.json'
+      teaser_scan_levels:
+        description: 'TEASER_SCAN_LEVELS (int)'
+        required: false
+        default: '6'
+      ebay_max_candidates_per_seed:
+        description: 'Max candidates per seed for run'
+        required: false
+        default: '30'
+      run_immofux:
+        description: 'RUN_IMMOFUX (1 to enable, 0 to disable)'
+        required: false
+        default: '0'
+
+jobs:
+  check-urls:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies (best-effort)
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install requests beautifulsoup4
+          fi
+
+      - name: Run check_urls.py
+        env:
+          URLS: ${{ github.event.inputs.urls }}
+          NOMINATIM_USER_AGENT: ${{ github.event.inputs.nominatim_user_agent }}
+          EBAY_VERBOSE: ${{ github.event.inputs.ebay_verbose }}
+          EBAY_SKIP_CACHE: ${{ github.event.inputs.ebay_skip_cache }}
+          EBAY_PLZ_CACHE: ${{ github.event.inputs.ebay_plz_cache }}
+          EBAY_TEASER_SCAN_LEVELS: ${{ github.event.inputs.teaser_scan_levels }}
+          EBAY_MAX_CANDIDATES_PER_SEED: ${{ github.event.inputs.ebay_max_candidates_per_seed }}
+          RUN_IMMOFUX: ${{ github.event.inputs.run_immofux }}
+        run: |
+          python tools/check_urls.py
+          echo "Wrote storage/check_urls_result.json (if created)."
+          echo "---- cat storage/check_urls_result.json ----"
+          if [ -f storage/check_urls_result.json ]; then
+            cat storage/check_urls_result.json
+          else
+            echo "No result file found."
+          fi
+
+      - name: Upload results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check_urls_result
+          path: storage/check_urls_result.json
